@@ -200,7 +200,7 @@ start:
         CcspTraceDebug(("goto start\n"));
         goto start;
     }
-    if ( 0 == sysevent_get(fd, token, "wan-status", wan_status,sizeof(wan_status)) && '\0' != wan_status)
+    if ( 0 == sysevent_get(fd, token, "wan-status", wan_status,sizeof(wan_status)) && '\0' != wan_status[0])
     {
         if (0 == strncmp(wan_status,"stopped",strlen("stopped")))
         {
@@ -374,13 +374,9 @@ xupnp_tls_interaction_request_certificate (GTlsInteraction              *interac
         g_error_free (xupnp_error);
     }
 
-    if(cert)
-    {
-        g_tls_connection_set_certificate (connection, cert);
-        g_object_unref (cert);
-        return G_TLS_INTERACTION_HANDLED;
-    }
-    return  G_TLS_INTERACTION_FAILED;
+    g_tls_connection_set_certificate (connection, cert);
+    g_object_unref (cert);
+    return G_TLS_INTERACTION_HANDLED;
 }
 
 static void
@@ -585,20 +581,24 @@ void* stop_discovery_process()
 
 gboolean delete_gwyitem(const char* serial_num)
 {
+    gboolean ret = FALSE;   
     //look if the item exists
+    g_mutex_lock(mutex);
     GList* lstXdev = g_list_find_custom (xdevlist, serial_num, (GCompareFunc)g_list_find_sno);
     //if item exists delete the item
     if (lstXdev)
     {
         GwyDeviceData *gwydata = lstXdev->data;
-        g_mutex_lock(mutex);
         xdevlist = g_list_remove_link(xdevlist, lstXdev);
         if(gwydata)
         {
             device_info_t di;
-            strcpy(di.Ipv4,gwydata->clientip->str);
-            strcpy(di.mac,gwydata->bcastmacaddress->str);
-            strcpy(di.Ipv6,gwydata->gwyipv6->str);
+            strncpy(di.Ipv4,gwydata->clientip->str,IPv4_ADDR_SIZE-1);
+            di.Ipv4[IPv4_ADDR_SIZE-1] = '\0';
+            strncpy(di.mac,gwydata->bcastmacaddress->str, MAC_ADDR_SIZE-1);
+            di.mac[MAC_ADDR_SIZE-1] = '\0';
+            strncpy(di.Ipv6,gwydata->gwyipv6->str, IPv6_ADDR_SIZE-1);
+            di.Ipv6[IPv6_ADDR_SIZE-1] = '\0';
             CcspTraceDebug(("callback=%p\n",callback));
             callback(&di,0,0);
             g_string_free(gwydata->serial_num, TRUE);
@@ -616,16 +616,16 @@ gboolean delete_gwyitem(const char* serial_num)
             }
         }
         g_free(gwydata);
-        g_mutex_unlock(mutex);
         CcspTraceInfo(("Deleted device %s from the list\n", serial_num));
         g_list_free (lstXdev);
-        return TRUE;
+        g_mutex_unlock(mutex);
+        ret = TRUE;
     }
     else
     {
         CcspTraceInfo(("Device %s to be removed not in the discovered device list\n", serial_num));
     }
-    return FALSE;
+    return ret;
 }
 
 static void
@@ -663,7 +663,9 @@ device_proxy_available_cb_bgw (GUPnPControlPoint *cp, GUPnPDeviceProxy *dproxy)
         return;
     }
     gchar* sno = gupnp_device_info_get_serial_number (GUPNP_DEVICE_INFO (dproxy));
+    g_mutex_lock(mutex);
     GList* xdevlistitem = g_list_find_custom(xdevlist,sno,(GCompareFunc)g_list_find_sno);
+    g_mutex_unlock(mutex);
     if(xdevlistitem!=NULL)
     {
         deviceAddNo--;
@@ -672,6 +674,7 @@ device_proxy_available_cb_bgw (GUPnPControlPoint *cp, GUPnPDeviceProxy *dproxy)
         return;
     }
     GwyDeviceData *gwydata = g_new(GwyDeviceData,1);
+    gboolean inserted = FALSE;
     init_gwydata(gwydata);
     gwydata->sproxy_i = gupnp_device_info_get_service(GUPNP_DEVICE_INFO (dproxy), IDM_DP_SERVICE);
     if (sno != NULL)
@@ -695,26 +698,30 @@ device_proxy_available_cb_bgw (GUPnPControlPoint *cp, GUPnPDeviceProxy *dproxy)
                     if ( processStringRequest((GUPnPServiceProxy *)gwydata->sproxy_i, "GetClientIP", "ClientIP" , &temp, FALSE))
                     {
                         g_string_assign(gwydata->clientip, temp);
-                        strncpy(di.Ipv4,gwydata->clientip->str,IPv4_ADDR_SIZE);
+                        strncpy(di.Ipv4,gwydata->clientip->str,IPv4_ADDR_SIZE-1);
+			di.Ipv4[IPv4_ADDR_SIZE-1] = '\0';
                         CcspTraceDebug(("clientIP=%s\n",di.Ipv4));
                         g_free(temp);
                     }
                     if ( processStringRequest((GUPnPServiceProxy *)gwydata->sproxy_i, "GetBcastMacAddress", "BcastMacAddress" , &temp, FALSE))
                     {
                         g_string_assign(gwydata->bcastmacaddress, temp);
-                        strncpy(di.mac,gwydata->bcastmacaddress->str,MAC_ADDR_SIZE);
+                        strncpy(di.mac,gwydata->bcastmacaddress->str,MAC_ADDR_SIZE-1);
+			di.mac[MAC_ADDR_SIZE-1] = '\0';
                         CcspTraceDebug(("BcastMacAddress=%s\n",di.mac));
                         g_free(temp);
                     }
                     if ( processStringRequest((GUPnPServiceProxy *)gwydata->sproxy_i, "GetGatewayIPv6", "GatewayIPv6" , &temp, FALSE))
                     {
                         g_string_assign(gwydata->gwyipv6,temp);
-                        strncpy(di.Ipv6,gwydata->gwyipv6->str,IPv6_ADDR_SIZE);
+                        strncpy(di.Ipv6,gwydata->gwyipv6->str,IPv6_ADDR_SIZE-1);
+			di.Ipv6[IPv6_ADDR_SIZE-1] = '\0';
                         CcspTraceDebug(("GatewayIPv6=%s\n",di.Ipv6));
                         g_free(temp);
                     }
                     g_mutex_lock(mutex);
                     xdevlist = g_list_insert_sorted_with_data(xdevlist, gwydata,(GCompareDataFunc)g_list_compare_sno, NULL);
+                    inserted = TRUE;
                     g_mutex_unlock(mutex);
                     CcspTraceInfo(("Associating device %s\n", sno));
                     CcspTraceInfo(("TELEMETRY_IDM_DEVICE_ASSOCIATED:%s\n", sno));
@@ -733,6 +740,23 @@ device_proxy_available_cb_bgw (GUPnPControlPoint *cp, GUPnPDeviceProxy *dproxy)
         {
             CcspTraceError(("Gateway UDN is NULL\n"));
         }
+    }
+    if (!inserted)
+    {
+        g_string_free(gwydata->serial_num, TRUE);
+        g_string_free(gwydata->bcastmacaddress, TRUE);
+        g_string_free(gwydata->gwyipv6, TRUE);
+        g_string_free(gwydata->clientip, TRUE);
+        g_string_free(gwydata->receiverid, TRUE);
+        if(gwydata->sproxy)
+        {
+            g_clear_object(&(gwydata->sproxy));
+        }
+        if(gwydata->sproxy_i)
+        {
+            g_clear_object(&(gwydata->sproxy_i));
+        }
+        g_free(gwydata);
     }
     g_free(sno);
     deviceAddNo--;
@@ -844,6 +868,7 @@ static void device_proxy_available_cb (GUPnPControlPoint *cp, GUPnPDeviceProxy *
 void remove_entries_in_list()
 {
     CcspTraceDebug(("%s:%d Entered.\n",__FUNCTION__,__LINE__));
+    g_mutex_lock(mutex);
     if (g_list_length(xdevlist) > 0)
     {
         GList *element = NULL;
@@ -851,7 +876,6 @@ void remove_entries_in_list()
         while(element)
         {
             GwyDeviceData *gwydata = element->data;
-            g_mutex_lock(mutex);
             xdevlist = g_list_remove_link(xdevlist,element);
             CcspTraceInfo(("%s:%d Deleting %s from the list\n",__FUNCTION__,__LINE__,gwydata->bcastmacaddress->str));
             g_string_free(gwydata->serial_num, TRUE);
@@ -868,10 +892,10 @@ void remove_entries_in_list()
                 g_clear_object(&(gwydata->sproxy_i));
             }
             g_free(gwydata);
-            g_mutex_unlock(mutex);
             element = g_list_next(element);
         }
     }
+    g_mutex_unlock(mutex);
 }
 
 /* This API is called by IDM to update flag to inform the stop_discovery_process() to quit main loop 
@@ -888,7 +912,7 @@ int stop_discovery()
 void start_discovery(discovery_config_t* dc_obj,int (*func_callback)(device_info_t*,uint,uint))
 {
     int rvalue=0;
-    if(!(dc_obj->interface)||(dc_obj->port)==0||(dc_obj->discovery_interval)==0||(dc_obj->loss_detection_window)==0)
+    if((dc_obj->interface[0]=='\0')||(dc_obj->port)==0||(dc_obj->discovery_interval)==0||(dc_obj->loss_detection_window)==0)
     {
         CcspTraceError(("some of mandatory values are missing\n"));
         CcspTraceInfo(("interface=%s port=%d discovery_interval=%d loss_detection_window=%d\n", dc_obj->interface, dc_obj->port, dc_obj->discovery_interval, dc_obj->loss_detection_window));
